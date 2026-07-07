@@ -7,6 +7,7 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import os
+import sys
 import functools
 import contextlib
 import numpy as np
@@ -129,7 +130,8 @@ class Texture:
     def __init__(self, *, image=None, width=None, height=None, channels=None, dtype=None, bilinear=True, mipmap=True):
         self.gl_id = None
         self.bilinear = bilinear
-        self.mipmap = mipmap
+        # glGenerateMipmap needs GL 3.0+; macOS runs on a GL 2.1 context.
+        self.mipmap = mipmap if sys.platform != 'darwin' else False
 
         # Determine size and dtype.
         if image is not None:
@@ -155,7 +157,7 @@ class Texture:
             gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
             gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
             gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR if self.bilinear else gl.GL_NEAREST)
-            gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR if self.mipmap else gl.GL_NEAREST)
+            gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR if self.mipmap else (gl.GL_LINEAR if self.bilinear else gl.GL_NEAREST))
         self.update(image)
 
     def delete(self):
