@@ -16,7 +16,9 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import os
+import re
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -62,7 +64,11 @@ def mark_complete(build_dir, module_name):
     artifact = _artifact_path(build_dir, module_name)
     assert os.path.isfile(artifact), f'build did not produce {artifact}'
     with open(os.path.join(build_dir, _COMPLETE_MARKER), 'w') as f:
-        f.write(os.path.basename(artifact) + '\n')
+        # Provenance, for diagnosing entries built on other machines.
+        f.write(f'artifact={os.path.basename(artifact)}\n')
+        f.write(f'torch={torch.__version__}\n')
+        f.write(f'cuda_runtime={torch.version.cuda}\n')
+        f.write(f'cuda_toolkit={toolkit_version() or "unknown"}\n')
 
 def clean_failed_build(build_dir, module_name):
     """Delete an incomplete cache entry unless a live build seems to own it."""
@@ -106,7 +112,19 @@ def import_from_cache(module_name, build_dir):
     spec = importlib.util.spec_from_file_location(module_name, filename, loader=loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    loader.exec_module(module)
+    try:
+        loader.exec_module(module)
+    except ImportError as err:
+        del sys.modules[module_name]
+        try:
+            with open(os.path.join(build_dir, _COMPLETE_MARKER)) as f:
+                provenance = ', '.join(line.strip() for line in f if '=' in line)
+        except OSError:
+            provenance = 'unknown'
+        raise ImportError(f'{err}\nCached op failed to load; it may have been built for a different '
+                          f'environment ({provenance}). Ops built with a CUDA toolkit newer than the torch '
+                          f'runtime need a correspondingly recent GPU driver. Delete {build_dir} to force '
+                          f'a rebuild.') from err
     return module
 
 #----------------------------------------------------------------------------
@@ -133,11 +151,45 @@ def setup_compiler_env():
             raise RuntimeError(f'Could not find MSVC/GCC/CLANG installation on this computer. Check _find_compiler_bindir() in "{__file__}".')
         os.environ['PATH'] += ';' + compiler_bindir
 
+def toolkit_version():
+    """Version of the CUDA toolkit that nvcc builds with (e.g. '12.8'),
+    or None if no toolkit can be found. This can differ from
+    torch.version.cuda, the runtime torch was built against."""
+    cuda_home = torch.utils.cpp_extension._find_cuda_home() # pylint: disable=protected-access
+    if cuda_home is None:
+        return None
+    try:
+        output = subprocess.check_output([os.path.join(cuda_home, 'bin', 'nvcc'), '--version']).decode()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r'release (\d+\.\d+)', output)
+    return match.group(1) if match else None
+
 def pin_arch_list(capability=None):
     # Match upstream custom_ops: an empty TORCH_CUDA_ARCH_LIST makes nvcc
     # target the current device, and overriding neutralizes container-set
     # values that could break the build or target the wrong archs. The
     # precompile script passes an explicit capability to cross-build.
     os.environ['TORCH_CUDA_ARCH_LIST'] = capability if capability is not None else ''
+
+def toolkit_mismatch():
+    """(toolkit, runtime) versions when their majors differ, else None."""
+    toolkit = toolkit_version()
+    runtime = torch.version.cuda
+    if toolkit is None or runtime is None or toolkit.split('.')[0] == runtime.split('.')[0]:
+        return None
+    return toolkit, runtime
+
+def warn_toolkit_mismatch():
+    """Print the toolkit/runtime mismatch warning once per process."""
+    mismatch = toolkit_mismatch()
+    if mismatch is not None and not getattr(warn_toolkit_mismatch, '_warned', False):
+        warn_toolkit_mismatch._warned = True
+        toolkit, runtime = mismatch
+        print(f'Warning: building with CUDA toolkit {toolkit} but torch runs CUDA {runtime}. '
+              f'This works, but the built ops embed the CUDA {toolkit.split(".")[0]} runtime and need a '
+              f'correspondingly recent GPU driver on every machine that loads them. Prefer a CUDA '
+              f'{runtime.split(".")[0]}.x toolkit (set CUDA_HOME/CUDA_PATH to select one).', file=sys.stderr)
+    return mismatch
 
 #----------------------------------------------------------------------------

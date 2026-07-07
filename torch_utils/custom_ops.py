@@ -61,6 +61,7 @@ def get_plugin(module_name, sources, headers=None, source_dir=None, **build_kwar
                 # before building. The compiler is only required on this path.
                 build_cache.clean_failed_build(cached_build_dir, module_name)
                 build_cache.setup_compiler_env()
+                build_cache.warn_toolkit_mismatch()
                 build_cache.pin_arch_list()
                 build_cache.populate_sources(cached_build_dir, all_source_files)
                 cached_sources = [os.path.join(cached_build_dir, os.path.basename(fname)) for fname in sources]
@@ -72,6 +73,7 @@ def get_plugin(module_name, sources, headers=None, source_dir=None, **build_kwar
             module = build_cache.import_from_cache(module_name, cached_build_dir)
         else:
             build_cache.setup_compiler_env()
+            build_cache.warn_toolkit_mismatch()
             build_cache.pin_arch_list()
             torch.utils.cpp_extension.load(name=module_name, verbose=verbose_build, sources=sources, **build_kwargs)
             module = importlib.import_module(module_name)
