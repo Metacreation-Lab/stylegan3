@@ -90,7 +90,10 @@ def report(name, value):
         elems.square().sum(),
     ])
     assert moments.ndim == 1 and moments.shape[0] == _num_moments
-    moments = moments.to(_counter_dtype)
+    # MPS has no float64; accumulate in float32 there and let _sync() promote
+    # to float64 on the CPU. Counters are reset on every Collector.update(),
+    # so the precision loss is bounded to one collection interval.
+    moments = moments.to(_counter_dtype if moments.device.type != 'mps' else torch.float32)
 
     device = moments.device
     if device not in _counters[name]:

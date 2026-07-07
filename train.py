@@ -10,10 +10,18 @@
 "Alias-Free Generative Adversarial Networks"."""
 
 import os
+import sys
 import click
 import re
 import json
 import tempfile
+
+# A few ops used in training (e.g. aten::grid_sampler_2d_backward from the
+# augmentation pipe) have no MPS kernel yet; fall back to the CPU for those.
+# Must be set before torch is imported.
+if sys.platform == 'darwin':
+    os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+
 import torch
 
 import dnnlib
@@ -167,6 +175,7 @@ def extract_resume_kimg(resume_pkl):
 @click.option('--tick',         help='How often to print progress', metavar='KIMG',             type=click.IntRange(min=1), default=4, show_default=True)
 @click.option('--snap',         help='How often to save snapshots', metavar='TICKS',            type=click.IntRange(min=1), default=50, show_default=True)
 @click.option('--seed',         help='Random seed', metavar='INT',                              type=click.IntRange(min=0), default=0, show_default=True)
+@click.option('--device',       'device_name', help='Device to train on',                      type=click.Choice(['auto', 'cuda', 'mps', 'cpu']), default='auto', show_default=True)
 @click.option('--fp32',         help='Disable mixed-precision', metavar='BOOL',                 type=bool, default=False, show_default=True)
 @click.option('--nobench',      help='Disable cuDNN benchmarking', metavar='BOOL',              type=bool, default=False, show_default=True)
 @click.option('--track-emissions', help='Track energy use and CO2 emissions via codecarbon',    is_flag=True)
@@ -204,7 +213,10 @@ def main(**kwargs):
     c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0,0.99], eps=1e-8)
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0,0.99], eps=1e-8)
     c.loss_kwargs = dnnlib.EasyDict(class_name='training.loss.StyleGAN2Loss')
-    c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
+    if opts.device_name == 'auto':
+        opts.device_name = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    c.device_name = opts.device_name
+    c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=(c.device_name == 'cuda'), prefetch_factor=2)
 
     # Training set.
     c.training_set_kwargs, dataset_name = init_dataset_kwargs(data=opts.data)
@@ -233,6 +245,8 @@ def main(**kwargs):
     c.data_loader_kwargs.num_workers = opts.workers
 
     # Sanity checks.
+    if c.device_name != 'cuda' and c.num_gpus > 1:
+        raise click.ClickException(f'--device={c.device_name} requires --gpus=1')
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
     if c.batch_size % (c.num_gpus * c.batch_gpu) != 0:
