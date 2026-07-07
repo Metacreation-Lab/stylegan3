@@ -118,6 +118,7 @@ def training_loop(
     resume_pkl              = None,     # Network pickle to resume training from.
     resume_kimg             = 0,        # First kimg to report when resuming training.
     cudnn_benchmark         = True,     # Enable torch.backends.cudnn.benchmark?
+    track_emissions         = False,    # Track energy use and CO2 emissions via codecarbon?
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
@@ -251,6 +252,24 @@ def training_loop(
     batch_idx = 0
     if progress_fn is not None:
         progress_fn(0, total_kimg)
+
+    # Start emissions tracking (rank 0 only). Import lazily so that
+    # codecarbon is never touched unless tracking is enabled.
+    tracker = None
+    if rank == 0 and track_emissions:
+        from codecarbon import EmissionsTracker
+        tracker = EmissionsTracker(
+            output_dir=run_dir,
+            output_file='emissions.csv',
+            save_to_api=False,
+            log_level='warning',
+            tracking_mode='process',
+            project_name='stylegan3',
+        )
+        tracker.start()
+    prev_energy_wh = 0.0
+    prev_co2_g = 0.0
+
     while True:
 
         # Fetch training data.
@@ -336,6 +355,15 @@ def training_loop(
         fields += [f"reserved {training_stats.report0('Resources/peak_gpu_mem_reserved_gb', torch.cuda.max_memory_reserved(device) / 2**30):<6.2f}"]
         torch.cuda.reset_peak_memory_stats()
         fields += [f"augment {training_stats.report0('Progress/augment', float(augment_pipe.p.cpu()) if augment_pipe is not None else 0):.3f}"]
+        if tracker is not None:
+            energy_wh = tracker._total_energy.kWh * 1000 # pylint: disable=protected-access
+            co2_g = tracker._total_emissions * 1000 # pylint: disable=protected-access
+            fields += [f"energy/tick {training_stats.report0('Emissions/energy_wh_per_tick', energy_wh - prev_energy_wh):<8.4f}"]
+            fields += [f"co2eq/tick {training_stats.report0('Emissions/co2eq_g_per_tick', co2_g - prev_co2_g):<10.6f}"]
+            training_stats.report0('Emissions/energy_wh', energy_wh)
+            training_stats.report0('Emissions/co2eq_g', co2_g)
+            prev_energy_wh = energy_wh
+            prev_co2_g = co2_g
         training_stats.report0('Timing/total_hours', (tick_end_time - start_time) / (60 * 60))
         training_stats.report0('Timing/total_days', (tick_end_time - start_time) / (24 * 60 * 60))
         if rank == 0:
@@ -411,6 +439,10 @@ def training_loop(
         if progress_fn is not None:
             progress_fn(cur_nimg // 1000, total_kimg)
 
+        # Flush emissions data for crash safety.
+        if tracker is not None:
+            tracker.flush()
+
         # Update state.
         cur_tick += 1
         tick_start_nimg = cur_nimg
@@ -418,6 +450,11 @@ def training_loop(
         maintenance_time = tick_start_time - tick_end_time
         if done:
             break
+
+    # Stop emissions tracking.
+    if tracker is not None:
+        emissions = tracker.stop()
+        print(f'Total emissions: {emissions * 1000:.4f} g CO2eq')
 
     # Done.
     if rank == 0:
