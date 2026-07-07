@@ -6,6 +6,7 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
+import sys
 import time
 import glfw
 import OpenGL.GL as gl
@@ -32,6 +33,10 @@ class GlfwWindow: # pylint: disable=too-many-public-methods
         # Create window.
         glfw.init()
         glfw.window_hint(glfw.VISIBLE, False)
+        if sys.platform == 'darwin':
+            # Keep the framebuffer 1:1 with window coordinates; the fixed-function
+            # drawing and glReadPixels math assume it. Tradeoff: not retina-crisp.
+            glfw.window_hint(glfw.COCOA_RETINA_FRAMEBUFFER, glfw.FALSE)
         self._glfw_window = glfw.create_window(width=window_width, height=window_height, title=title, monitor=None, share=None)
         self._attach_glfw_callbacks()
         self.make_context_current()
@@ -79,14 +84,26 @@ class GlfwWindow: # pylint: disable=too-many-public-methods
         _left, top, _right, _bottom = glfw.get_window_frame_size(self._glfw_window)
         return top
 
+    def _get_work_area(self):
+        monitor = glfw.get_primary_monitor()
+        # get_monitor_workarea can crash on macOS; use it elsewhere only.
+        # A zero-sized result falls through to the always-valid video mode.
+        if sys.platform != 'darwin':
+            area_x, area_y, area_width, area_height = glfw.get_monitor_workarea(monitor)
+            if area_width > 0 and area_height > 0:
+                return area_x, area_y, area_width, area_height
+        area_x, area_y = glfw.get_monitor_pos(monitor)
+        mode = glfw.get_video_mode(monitor)
+        return area_x, area_y, mode.size.width, mode.size.height
+
     @property
     def monitor_width(self):
-        _, _, width, _height = glfw.get_monitor_workarea(glfw.get_primary_monitor())
+        _, _, width, _height = self._get_work_area()
         return width
 
     @property
     def monitor_height(self):
-        _, _, _width, height = glfw.get_monitor_workarea(glfw.get_primary_monitor())
+        _, _, _width, height = self._get_work_area()
         return height
 
     @property

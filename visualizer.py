@@ -8,6 +8,12 @@
 
 import click
 import os
+import sys
+
+# A few ops used by the render panels have no MPS kernel yet; fall back to the
+# CPU for those. Must be set before torch is imported (renderer imports torch).
+if sys.platform == 'darwin':
+    os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
 
 import multiprocessing
 import numpy as np
@@ -232,7 +238,7 @@ class AsyncRenderer:
     def get_result(self):
         assert not self._closed
         if self._result_queue is not None:
-            while self._result_queue.qsize() > 0:
+            while not self._result_queue.empty(): # qsize() raises on macOS (no sem_getvalue)
                 result, stamp = self._result_queue.get()
                 if stamp == self._cur_stamp:
                     self._cur_result = result
@@ -251,7 +257,7 @@ class AsyncRenderer:
         cur_stamp = None
         while True:
             args, stamp = args_queue.get()
-            while args_queue.qsize() > 0:
+            while not args_queue.empty():
                 args, stamp = args_queue.get()
             if args != cur_args or stamp != cur_stamp:
                 result = renderer_obj.render(**args)
