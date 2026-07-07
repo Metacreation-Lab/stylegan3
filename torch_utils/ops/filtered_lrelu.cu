@@ -108,7 +108,10 @@ static __global__ void setup_filters_kernel(filtered_lrelu_kernel_params p)
 }
 
 // Host function to copy filters written by setup kernel into constant buffer for main kernel.
-template <bool, bool> static cudaError_t copy_filters(cudaStream_t stream)
+// Must not be static: it is declared extern in filtered_lrelu.h and the explicit
+// instantiations in filtered_lrelu_{wr,rd,ns}.cu are referenced from filtered_lrelu.cpp.
+// CUDA 13 honors the internal linkage and fails to link; older toolkits tolerated it.
+template <bool, bool> cudaError_t copy_filters(cudaStream_t stream)
 {
     void* src = 0;
     cudaError_t err = cudaGetSymbolAddress(&src, g_fbuf);
