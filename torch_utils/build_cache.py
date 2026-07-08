@@ -9,8 +9,8 @@ consumed on another. A single entry may cover several compute capabilities (a fa
 built by the precompiler); the loader picks any complete entry whose arch
 set contains the current device. An entry is only trusted once its
 completion marker exists; incomplete entries are treated as failed builds
-and deleted once they look abandoned. A complete entry is imported directly
-from disk, without compiler or CUDA toolkit access.
+and deleted before rebuilding. A complete entry is imported directly from
+disk, without compiler or CUDA toolkit access.
 """
 
 import glob
@@ -22,15 +22,12 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import uuid
 
 import torch
 import torch.utils.cpp_extension
 
 _COMPLETE_MARKER = '.build_complete'
-_LOCK_STALE_SECONDS = 30 * 60 # a crashed build leaves its lock behind; consider it dead after this
-_DIR_GRACE_SECONDS = 60       # freshly created entries may still be racing towards their build lock
 
 #----------------------------------------------------------------------------
 # Cache key and directory resolution.
@@ -95,17 +92,10 @@ def mark_complete(build_dir, module_name):
         f.write(f'cuda_toolkit={toolkit_version() or "unknown"}\n')
 
 def clean_failed_build(build_dir, module_name):
-    """Delete an incomplete cache entry unless a live build seems to own it."""
-    if not os.path.isdir(build_dir) or is_complete(build_dir, module_name):
-        return
-    now = time.time()
-    lock = os.path.join(build_dir, 'lock') # FileBaton used by torch.utils.cpp_extension.load()
-    if os.path.exists(lock):
-        if now - os.path.getmtime(lock) < _LOCK_STALE_SECONDS:
-            return # build in progress; torch's FileBaton will serialize us behind it
-    elif now - os.path.getmtime(build_dir) < _DIR_GRACE_SECONDS:
-        return # entry just created here or by a concurrent process
-    shutil.rmtree(build_dir, ignore_errors=True)
+    """Delete an incomplete entry (interrupted or failed build) so the next
+    build starts from scratch."""
+    if os.path.isdir(build_dir) and not is_complete(build_dir, module_name):
+        shutil.rmtree(build_dir, ignore_errors=True)
 
 #----------------------------------------------------------------------------
 # Source staging (atomic, timestamp-stable so ninja rebuilds stay incremental).
