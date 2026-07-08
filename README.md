@@ -10,8 +10,8 @@ This branch (`autolume`) adapts [NVlabs StyleGAN3](https://github.com/NVlabs/sty
 
 ### Custom-ops build system
 
-- Shared build cache keyed by source digest, torch version, CUDA version and compute capability: GPUs of the same capability share builds, and a warmed cache loads without a compiler, CUDA toolkit or ninja. Failed builds are detected and cleaned automatically.
-- `scripts/precompile_ops.py` warms the same cache ahead of time, for the current device by default or an explicit `--arch` list.
+- Shared build cache keyed by source digest, Python version, torch version and compute capabilities: GPUs of any covered capability share builds, and a warmed cache loads without a compiler, CUDA toolkit or ninja. Failed builds are detected and cleaned automatically. Set `TORCH_EXTENSIONS_DIR` to relocate the cache.
+- `scripts/precompile_ops.py` warms the same cache ahead of time, for the current device by default or an explicit `--arch` list, building each op once as a single fatbin covering all requested capabilities.
 - Cache entries record build provenance (torch, CUDA runtime, CUDA toolkit); builds warn on a toolkit/runtime major-version mismatch and precompilation refuses it unless `--bypass-matching-toolkit` is passed.
 - CUDA 13 compatibility fix in `filtered_lrelu`.
 

@@ -1,14 +1,16 @@
 """Shared build-cache utilities for the custom C++/CUDA ops.
 
-Both the JIT loader (`torch_utils.ops.custom_ops`) and the standalone
+Both the JIT loader (`torch_utils.custom_ops`) and the standalone
 precompiler (`scripts/precompile_ops.py`) build into the same on-disk cache.
-A cache entry is keyed by (source digest, torch version, CUDA version,
-compute capability) -- never by GPU name -- so entries are shared across
+A cache entry is keyed by (source digest, Python version, torch version,
+compute capabilities) -- never by GPU name -- so entries are shared across
 GPUs of the same compute capability and can be produced on one machine and
-consumed on another. An entry is only trusted once its completion marker
-exists; incomplete entries are treated as failed builds and deleted once
-they look abandoned. A complete entry is imported directly from disk,
-without compiler or CUDA toolkit access.
+consumed on another. A single entry may cover several compute capabilities (a fatbin
+built by the precompiler); the loader picks any complete entry whose arch
+set contains the current device. An entry is only trusted once its
+completion marker exists; incomplete entries are treated as failed builds
+and deleted once they look abandoned. A complete entry is imported directly
+from disk, without compiler or CUDA toolkit access.
 """
 
 import glob
@@ -44,11 +46,33 @@ def current_capability():
     major, minor = torch.cuda.get_device_capability()
     return f'{major}.{minor}'
 
-def plugin_build_dir(module_name, source_files, capability, verbose=False):
+def _arch_tag(capabilities):
+    return 'sm' + '_'.join(sorted(capabilities, key=float))
+
+def _key_prefix(source_files):
+    # The Python tag duplicates torch's default py/cu-versioned cache layout,
+    # but keeps entries self-contained when TORCH_EXTENSIONS_DIR relocates
+    # the cache to a flat directory.
+    return f'{source_digest(source_files)}-py{sys.version_info.major}{sys.version_info.minor}-torch{torch.__version__}-'
+
+def plugin_build_dir(module_name, source_files, capabilities, verbose=False):
     assert torch.version.cuda is not None, 'CUDA-enabled torch build required'
     root = torch.utils.cpp_extension._get_build_directory(module_name, verbose=verbose) # pylint: disable=protected-access
-    key = f'{source_digest(source_files)}-torch{torch.__version__}-cuda{torch.version.cuda}-sm{capability.replace(".", "")}'
-    return os.path.join(root, key)
+    return os.path.join(root, _key_prefix(source_files) + _arch_tag(capabilities))
+
+def find_compatible_build_dir(module_name, source_files, capability, verbose=False):
+    """Complete cache entry usable on a device of the given capability:
+    the exact single-arch entry if complete, else any complete entry whose
+    arch set contains the capability, else None."""
+    exact = plugin_build_dir(module_name, source_files, [capability], verbose=verbose)
+    if is_complete(exact, module_name):
+        return exact
+    pattern = os.path.join(os.path.dirname(exact), _key_prefix(source_files) + 'sm*')
+    for build_dir in sorted(glob.glob(pattern)):
+        archs = os.path.basename(build_dir).rsplit('-sm', 1)[1].split('_')
+        if capability in archs and is_complete(build_dir, module_name):
+            return build_dir
+    return None
 
 #----------------------------------------------------------------------------
 # Entry completion state and failed-build cleanup.

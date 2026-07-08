@@ -12,7 +12,7 @@ import os
 import torch
 import torch.utils.cpp_extension
 
-from torch_utils.ops import build_cache
+from torch_utils import build_cache
 
 #----------------------------------------------------------------------------
 # Global options.
@@ -46,17 +46,20 @@ def get_plugin(module_name, sources, headers=None, source_dir=None, **build_kwar
     # Compile and load.
     try: # pylint: disable=too-many-nested-blocks
         # Build into the shared cache keyed by (source digest, torch version,
-        # CUDA version, compute capability). Sources are copied into the
-        # cache entry so file timestamps and names stay stable across builds,
-        # allowing fast incremental rebuilds (and working around the *.cu
-        # dependency bug in ninja config). This requires all source files to
-        # reside in a single directory (just for simplicity).
+        # compute capabilities). Sources are copied into the cache entry so
+        # file timestamps and names stay stable across builds, allowing fast
+        # incremental rebuilds (and working around the *.cu dependency bug
+        # in ninja config). This requires all source files to reside in a
+        # single directory (just for simplicity).
         all_source_files = sorted(sources + headers)
         all_source_dirs = set(os.path.dirname(fname) for fname in all_source_files)
         if len(all_source_dirs) == 1:
             capability = build_cache.current_capability()
-            cached_build_dir = build_cache.plugin_build_dir(module_name, all_source_files, capability, verbose=verbose_build)
-            if not build_cache.is_complete(cached_build_dir, module_name):
+            # Any complete entry covering the current device works, including
+            # multi-arch entries produced by scripts/precompile_ops.py.
+            cached_build_dir = build_cache.find_compatible_build_dir(module_name, all_source_files, capability, verbose=verbose_build)
+            if cached_build_dir is None:
+                cached_build_dir = build_cache.plugin_build_dir(module_name, all_source_files, [capability], verbose=verbose_build)
                 # Failed or abandoned entries poison the cache; remove them
                 # before building. The compiler is only required on this path.
                 build_cache.clean_failed_build(cached_build_dir, module_name)

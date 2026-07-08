@@ -7,6 +7,13 @@ without compiler access. Drives torch.utils.cpp_extension's ninja build
 directly instead of custom_ops.get_plugin so that a single process can
 build for many compute capabilities without importing the built modules.
 
+Each plugin is built once as a single fatbin entry covering all requested
+compute capabilities.
+
+The cache lives in torch's standard extensions directory; set
+TORCH_EXTENSIONS_DIR to relocate it, e.g. to ship prebuilt ops. The variable
+must be set both when precompiling and in every process that loads the ops.
+
 Examples:
 
 \b
@@ -27,7 +34,7 @@ import click
 import torch
 import torch.utils.cpp_extension
 
-from torch_utils.ops import build_cache
+from torch_utils import build_cache
 
 #----------------------------------------------------------------------------
 # Keep in sync with the _init() calls in
@@ -52,19 +59,19 @@ PLUGIN_SPECS = [
 
 #----------------------------------------------------------------------------
 
-def build_plugin(spec, capability, verbose):
+def build_plugin(spec, capabilities, verbose):
     module_name = spec['module_name']
     sources = [os.path.join(_OPS_DIR, fname) for fname in spec['sources']]
     headers = [os.path.join(_OPS_DIR, fname) for fname in spec['headers']]
     all_source_files = sorted(sources + headers)
 
-    build_dir = build_cache.plugin_build_dir(module_name, all_source_files, capability, verbose=verbose)
+    build_dir = build_cache.plugin_build_dir(module_name, all_source_files, capabilities, verbose=verbose)
     if build_cache.is_complete(build_dir, module_name):
         return 'cached'
 
     build_cache.clean_failed_build(build_dir, module_name)
     build_cache.populate_sources(build_dir, all_source_files)
-    build_cache.pin_arch_list(capability)
+    build_cache.pin_arch_list(';'.join(capabilities))
     cached_sources = [os.path.join(build_dir, os.path.basename(fname)) for fname in sources]
     torch.utils.cpp_extension._write_ninja_file_and_build_library( # pylint: disable=protected-access
         name=module_name,
@@ -85,14 +92,14 @@ def build_plugin(spec, capability, verbose):
 
 @click.command(help=__doc__)
 @click.option('--arch', 'archs', default='',
-              help='Comma-separated compute capabilities to build for. Defaults to the current device, matching JIT.')
+              help='Comma-separated compute capabilities to build for, e.g. 7.5,8.6. Defaults to the current device, matching JIT.')
 @click.option('--bypass-matching-toolkit', is_flag=True,
               help='Build even if the CUDA toolkit major version differs from the torch CUDA runtime.')
 @click.option('--verbose', is_flag=True, help='Show build output.')
 def main(archs, bypass_matching_toolkit, verbose):
     if torch.version.cuda is None:
         raise click.ClickException('CUDA-enabled torch build required.')
-    archs = [arch.strip() for arch in archs.split(',') if arch.strip()] or [build_cache.current_capability()]
+    archs = [arch.strip() for arch in archs.replace(';', ',').split(',') if arch.strip()] or [build_cache.current_capability()]
     build_cache.setup_compiler_env()
     mismatch = build_cache.toolkit_mismatch()
     if mismatch is not None:
@@ -105,10 +112,9 @@ def main(archs, bypass_matching_toolkit, verbose):
                 f'{runtime.split(".")[0]}.x toolkit, or pass --bypass-matching-toolkit to build anyway.')
         build_cache.warn_toolkit_mismatch()
     for spec in PLUGIN_SPECS:
-        for arch in archs:
-            print(f'Building {spec["module_name"]} for sm{arch.replace(".", "")}... ', end='', flush=True)
-            status = build_plugin(spec, arch, verbose)
-            print(status)
+        print(f'Building {spec["module_name"]} for sm{"_".join(sorted(archs, key=float))}... ', end='', flush=True)
+        status = build_plugin(spec, archs, verbose)
+        print(status)
 
 #----------------------------------------------------------------------------
 
