@@ -93,10 +93,10 @@ def build_plugin(spec, capabilities, verbose):
 @click.command(help=__doc__)
 @click.option('--arch', 'archs', default='',
               help='Comma-separated compute capabilities to build for, e.g. 7.5,8.6. Defaults to the current device, matching JIT.')
-@click.option('--bypass-matching-toolkit', is_flag=True,
+@click.option('--allow-toolkit-mismatch', is_flag=True,
               help='Build even if the CUDA toolkit major version differs from the torch CUDA runtime.')
 @click.option('--verbose', is_flag=True, help='Show build output.')
-def main(archs, bypass_matching_toolkit, verbose):
+def main(archs, allow_toolkit_mismatch, verbose):
     if torch.version.cuda is None:
         raise click.ClickException('CUDA-enabled torch build required.')
     archs = [arch.strip() for arch in archs.replace(';', ',').split(',') if arch.strip()] or [build_cache.current_capability()]
@@ -104,12 +104,12 @@ def main(archs, bypass_matching_toolkit, verbose):
     mismatch = build_cache.toolkit_mismatch()
     if mismatch is not None:
         toolkit, runtime = mismatch
-        if not bypass_matching_toolkit:
+        if not allow_toolkit_mismatch:
             raise click.ClickException(
                 f'CUDA toolkit {toolkit} does not match the torch CUDA runtime {runtime}. Ops precompiled this '
                 f'way embed the CUDA {toolkit.split(".")[0]} runtime and need a correspondingly recent GPU driver '
                 f'on every machine that loads this cache. Set CUDA_HOME/CUDA_PATH to a CUDA '
-                f'{runtime.split(".")[0]}.x toolkit, or pass --bypass-matching-toolkit to build anyway.')
+                f'{runtime.split(".")[0]}.x toolkit, or pass --allow-toolkit-mismatch to build anyway.')
         build_cache.warn_toolkit_mismatch()
     for spec in PLUGIN_SPECS:
         print(f'Building {spec["module_name"]} for sm{"_".join(sorted(archs, key=float))}... ', end='', flush=True)
