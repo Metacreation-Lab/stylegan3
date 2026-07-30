@@ -83,6 +83,7 @@ def launch_training(c, desc, outdir, dry_run):
     print(f'Dataset resolution:  {c.training_set_kwargs.resolution}')
     print(f'Dataset labels:      {c.training_set_kwargs.use_labels}')
     print(f'Dataset x-flips:     {c.training_set_kwargs.xflip}')
+    print(f'Dataset y-flips:     {c.training_set_kwargs.yflip}')
     print()
 
     # Dry run?
@@ -109,7 +110,7 @@ def launch_training(c, desc, outdir, dry_run):
 
 def init_dataset_kwargs(data):
     try:
-        dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False)
+        dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False, yflip=False)
         dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs) # Subclass of training.dataset.Dataset.
         dataset_kwargs.resolution = dataset_obj.resolution # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset_obj.has_labels # Be explicit about labels.
@@ -126,6 +127,25 @@ def parse_comma_separated_list(s):
     if s is None or s.lower() == 'none' or s == '':
         return []
     return s.split(',')
+
+#----------------------------------------------------------------------------
+
+def parse_mirror(s):
+    """Parse --mirror into a flip mode: 'none', 'x', 'y' or 'xy' (all 4
+    orientations). Also accepts bitmasks '0'-'3' (bit 0 = x, bit 1 = y) and
+    legacy bool values (truthy = 'x', falsy = 'none')."""
+    s = str(s).lower()
+    if s in ['none', 'x', 'y', 'xy']:
+        return s
+    if s in ['0', '1', '2', '3']:
+        return ['none', 'x', 'y', 'xy'][int(s)]
+    if s in ['true', 't', 'yes', 'on']: # legacy bool
+        print(f'Warning: --mirror={s} is deprecated; use --mirror=x instead.')
+        return 'x'
+    if s in ['false', 'f', 'no', 'n', 'off', '']: # legacy bool
+        print(f'Warning: --mirror={s} is deprecated; use --mirror=none instead.')
+        return 'none'
+    raise click.ClickException(f'--mirror: expected one of [none|x|y|xy|0|1|2|3], got "{s}"')
 
 #----------------------------------------------------------------------------
 
@@ -151,7 +171,7 @@ def extract_resume_kimg(resume_pkl):
 
 # Optional features.
 @click.option('--cond',         help='Train conditional model', metavar='BOOL',                 type=bool, default=False, show_default=True)
-@click.option('--mirror',       help='Enable dataset x-flips', metavar='BOOL',                  type=bool, default=False, show_default=True)
+@click.option('--mirror',       help='Dataset flips: x = horizontal, y = vertical, xy = all 4 orientations (also accepts bitmask 0-3)', metavar='[none|x|y|xy]', type=str, default='none', show_default=True)
 @click.option('--aug',          help='Augmentation mode',                                       type=click.Choice(['noaug', 'ada', 'fixed']), default='ada', show_default=True)
 @click.option('--augpipe',      help='Augmentation pipeline',                                   type=click.Choice(['blit', 'geom', 'color', 'filter', 'noise', 'cutout', 'bg', 'bgc', 'bgcf', 'bgcfn', 'bgcfnc']), default='bgc', show_default=True)
 @click.option('--resume',       help='Resume from given network pickle', metavar='[PATH|URL]',  type=str)
@@ -191,18 +211,18 @@ def main(**kwargs):
     \b
     # Train StyleGAN3-T for AFHQv2 using 8 GPUs.
     python train.py --outdir=~/training-runs --cfg=stylegan3-t --data=~/datasets/afhqv2-512x512.zip \\
-        --gpus=8 --batch=32 --gamma=8.2 --mirror=1
+        --gpus=8 --batch=32 --gamma=8.2 --mirror=x
 
     \b
     # Fine-tune StyleGAN3-R for MetFaces-U using 1 GPU, starting from the pre-trained FFHQ-U pickle.
     python train.py --outdir=~/training-runs --cfg=stylegan3-r --data=~/datasets/metfacesu-1024x1024.zip \\
-        --gpus=8 --batch=32 --gamma=6.6 --mirror=1 --kimg=5000 --snap=5 \\
+        --gpus=8 --batch=32 --gamma=6.6 --mirror=x --kimg=5000 --snap=5 \\
         --resume=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-r-ffhqu-1024x1024.pkl
 
     \b
     # Train StyleGAN2 for FFHQ at 1024x1024 resolution using 8 GPUs.
     python train.py --outdir=~/training-runs --cfg=stylegan2 --data=~/datasets/ffhq-1024x1024.zip \\
-        --gpus=8 --batch=32 --gamma=10 --mirror=1 --aug=noaug
+        --gpus=8 --batch=32 --gamma=10 --mirror=x --aug=noaug
     """
 
     # Initialize config.
@@ -223,7 +243,9 @@ def main(**kwargs):
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException('--cond=True requires labels specified in dataset.json')
     c.training_set_kwargs.use_labels = opts.cond
-    c.training_set_kwargs.xflip = opts.mirror
+    mirror_mode = parse_mirror(opts.mirror)
+    c.training_set_kwargs.xflip = mirror_mode in ['x', 'xy']
+    c.training_set_kwargs.yflip = mirror_mode in ['y', 'xy']
 
     # Hyperparameters & settings.
     c.num_gpus = opts.gpus
