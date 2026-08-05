@@ -26,7 +26,8 @@ This branch (`autolume`) adapts [NVlabs StyleGAN3](https://github.com/NVlabs/sty
 ### Training
 
 - `resume_kimg` is derived from the snapshot filename, so resumed trainings continue their kimg count and snapshot numbering.
-- `--augpipe` presets from StyleGAN2-ADA (`blit`, `geom`, `color`, …, `bgc` default).
+- `--augpipe` presets from StyleGAN2-ADA (`blit`, `geom`, `color`, …, `bgc` default), plus `none` to start from an empty pipeline.
+- `--augpipe-set NAME=VALUE` (repeatable) overrides individual augmentation parameters on top of the preset, covering both the 15 probability multipliers (`lumaflip=0.3`) and the 12 strength values (`hue_max=0.25`, `noise_std=0.05`). Multipliers are capped at 1, beyond which an augmentation fires on every image and leaks into the generated distribution.
 - Opt-in energy and emissions tracking via codecarbon (`--track-emissions`, off by default).
 
 ### Dataset tool

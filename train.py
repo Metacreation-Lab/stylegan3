@@ -149,6 +149,46 @@ def parse_mirror(s):
 
 #----------------------------------------------------------------------------
 
+# AugmentPipe parameters that --augpipe-set may assign. Kept as literals rather
+# than read off the signature, which persistence.persistent_class replaces with
+# (*args, **kwargs). imgfilter_bands is omitted: it takes a list, not a float.
+AUGPIPE_MULTIPLIERS = ['xflip', 'rotate90', 'xint', 'scale', 'rotate', 'aniso', 'xfrac',
+                       'brightness', 'contrast', 'lumaflip', 'hue', 'saturation',
+                       'imgfilter', 'noise', 'cutout']
+AUGPIPE_STRENGTHS = ['xint_max', 'scale_std', 'rotate_max', 'aniso_std', 'xfrac_std',
+                     'brightness_std', 'contrast_std', 'hue_max', 'saturation_std',
+                     'imgfilter_std', 'noise_std', 'cutout_size']
+
+def parse_augpipe_set(assignments, spec, augpipe):
+    """Apply `--augpipe-set NAME=VALUE` overrides on top of an --augpipe preset.
+
+    Probability multipliers are capped at 1: an augmentation whose multiplier
+    times --p reaches 1 fires on every image, and augmentations only stay
+    non-leaking while some images pass through untouched."""
+    spec = dict(spec)
+    for assignment in assignments:
+        name, sep, raw = assignment.partition('=')
+        name, raw = name.strip(), raw.strip()
+        if sep == '':
+            raise click.ClickException(f'--augpipe-set: expected NAME=VALUE, got "{assignment}"')
+        if name not in AUGPIPE_MULTIPLIERS and name not in AUGPIPE_STRENGTHS:
+            raise click.ClickException(f'--augpipe-set: "{name}" is not a settable augmentation parameter (multipliers: {", ".join(AUGPIPE_MULTIPLIERS)}; strengths: {", ".join(AUGPIPE_STRENGTHS)})')
+        try:
+            value = float(raw)
+        except ValueError:
+            raise click.ClickException(f'--augpipe-set: {name}="{raw}" is not a number')
+        if name in AUGPIPE_MULTIPLIERS and not 0 <= value <= 1:
+            raise click.ClickException(f'--augpipe-set: {name}={value} is outside [0, 1]; above 1 the augmentation fires on every image and leaks into the generated distribution')
+        if value == 0 and name in AUGPIPE_MULTIPLIERS:
+            spec.pop(name, None)
+        else:
+            spec[name] = value
+    if not any(spec.get(name, 0) > 0 for name in AUGPIPE_MULTIPLIERS):
+        raise click.ClickException(f'--augpipe={augpipe} plus the given --augpipe-set leaves no augmentation enabled; use --aug=noaug instead')
+    return spec
+
+#----------------------------------------------------------------------------
+
 def extract_resume_kimg(resume_pkl):
     """Extract the kimg value from a snapshot filename such as
     "network-snapshot-000123.pkl", so that kimg counting continues across
@@ -173,7 +213,8 @@ def extract_resume_kimg(resume_pkl):
 @click.option('--cond',         help='Train conditional model', metavar='BOOL',                 type=bool, default=False, show_default=True)
 @click.option('--mirror',       help='Dataset flips: x = horizontal, y = vertical, xy = all 4 orientations (also accepts bitmask 0-3)', metavar='[none|x|y|xy]', type=str, default='none', show_default=True)
 @click.option('--aug',          help='Augmentation mode',                                       type=click.Choice(['noaug', 'ada', 'fixed']), default='ada', show_default=True)
-@click.option('--augpipe',      help='Augmentation pipeline',                                   type=click.Choice(['blit', 'geom', 'color', 'filter', 'noise', 'cutout', 'bg', 'bgc', 'bgcf', 'bgcfn', 'bgcfnc']), default='bgc', show_default=True)
+@click.option('--augpipe',      help='Augmentation pipeline',                                   type=click.Choice(['none', 'blit', 'geom', 'color', 'filter', 'noise', 'cutout', 'bg', 'bgc', 'bgcf', 'bgcfn', 'bgcfnc']), default='bgc', show_default=True)
+@click.option('--augpipe-set',  help='Set one augmentation parameter, e.g. lumaflip=0.3 (repeatable)', metavar='NAME=VALUE', multiple=True)
 @click.option('--resume',       help='Resume from given network pickle', metavar='[PATH|URL]',  type=str)
 @click.option('--freezed',      help='Freeze first layers of D', metavar='INT',                 type=click.IntRange(min=0), default=0, show_default=True)
 
@@ -301,6 +342,7 @@ def main(**kwargs):
     # Augmentation. Presets from StyleGAN2-ADA; 'bgc' matches the pipeline
     # previously hardcoded here.
     augpipe_specs = {
+        'none':   dict(),
         'blit':   dict(xflip=1, rotate90=1, xint=1),
         'geom':   dict(scale=1, rotate=1, aniso=1, xfrac=1),
         'color':  dict(brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1),
@@ -313,8 +355,10 @@ def main(**kwargs):
         'bgcfn':  dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1, noise=1),
         'bgcfnc': dict(xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1, imgfilter=1, noise=1, cutout=1),
     }
+    if opts.aug == 'noaug' and len(opts.augpipe_set) > 0:
+        raise click.ClickException('--augpipe-set has no effect with --aug=noaug')
     if opts.aug != 'noaug':
-        c.augment_kwargs = dnnlib.EasyDict(class_name='training.augment.AugmentPipe', **augpipe_specs[opts.augpipe])
+        c.augment_kwargs = dnnlib.EasyDict(class_name='training.augment.AugmentPipe', **parse_augpipe_set(opts.augpipe_set, augpipe_specs[opts.augpipe], opts.augpipe))
         if opts.aug == 'ada':
             c.ada_target = opts.target
         if opts.aug == 'fixed':
